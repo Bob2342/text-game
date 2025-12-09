@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>AI Text Adventure (Enhanced)</title>
+
+<style>
+    body {
+        margin: 0;
+        background: #0e0e0f;
+        font-family: "Segoe UI", sans-serif;
+        color: #e6e6e6;
+        display: flex;
+        justify-content: center;
+        padding: 30px;
+    }
+
+    #container {
+        width: 900px;
+        display: flex;
+        gap: 20px;
+    }
+
+    /* Sidebar */
+    #sidebar {
+        width: 250px;
+        background: #1a1a1d;
+        padding: 20px;
+        border-radius: 12px;
+        height: fit-content;
+        box-shadow: 0 0 10px #0006;
+    }
+
+    #sidebar h3 {
+        margin-top: 0;
+    }
+
+    #inventoryBox {
+        margin-top: 20px;
+        border: 1px solid #333;
+        padding: 10px;
+        border-radius: 8px;
+        min-height: 80px;
+    }
+
+    /* Main game box */
+    #gameBox {
+        flex: 1;
+        background: #1f1f23;
+        padding: 25px;
+        border-radius: 12px;
+        box-shadow: 0 0 10px #0008;
+        display: none;
+        animation: fadeIn .5s ease;
+    }
+
+    @keyframes fadeIn {
+        from {opacity: 0; transform: translateY(10px);}
+        to {opacity: 1; transform: translateY(0);}
+    }
+
+    #questionText {
+        font-size: 1.3em;
+        padding-bottom: 10px;
+    }
+
+    /* Buttons */
+    .choiceBtn {
+        width: 100%;
+        padding: 14px;
+        margin-top: 10px;
+        border: none;
+        border-radius: 8px;
+        background: #3a3af1;
+        color: white;
+        font-size: 1em;
+        transition: .15s;
+    }
+
+    .choiceBtn:hover {
+        background: #5656ff;
+        cursor: pointer;
+    }
+
+    .smallBtn {
+        background: #444;
+        color: #eee;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: none;
+        margin-top: 10px;
+        cursor: pointer;
+    }
+</style>
+</head>
+<body>
+
+<div id="container">
+
+    <!-- Sidebar -->
+    <div id="sidebar">
+        <h3>Game Settings</h3>
+
+        <label>GrogCloud API Key:</label>
+        <input id="apiKey" type="password" style="width:100%; padding:6px; margin-top:5px; background:#2d2d31; border:1px solid #444; color:white; border-radius:6px;">
+
+        <label style="margin-top:15px;">Game Instructions:</label>
+        <textarea id="preInstructions" rows="6" style="width:100%; background:#2d2d31; border:1px solid #444; color:white; padding:6px; border-radius:6px;">You are a text adventure generator.
+You output ONLY the next scenario question.
+Example: "You see a house. What do you do?"
+No explanations. No formatting. No lists.</textarea>
+
+        <button class="smallBtn" onclick="startGame()">Start Game</button>
+        <button class="smallBtn" onclick="saveGame()">Save Game</button>
+        <button class="smallBtn" onclick="loadGame()">Load Game</button>
+
+        <h3 style="margin-top:25px;">Inventory</h3>
+        <div id="inventoryBox">Empty…</div>
+    </div>
+
+
+    <!-- Game panel -->
+    <div id="gameBox">
+        <div id="questionText">Loading…</div>
+        <div id="options"></div>
+    </div>
+
+</div>
+
+<script>
+////////////////////////////////////////////////////////////////
+// API CALL TO GROGCLOUD
+////////////////////////////////////////////////////////////////
+async function grogQuery(apiKey, messages) {
+    const res = await fetch("https://api.grogcloud.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "Authorization": "Bearer " + apiKey,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: "grog-chat-1",
+            messages: messages,
+            max_tokens: 200
+        })
+    });
+
+    const data = await res.json();
+    return data.choices[0].message.content;
+}
+
+////////////////////////////////////////////////////////////////
+// GLOBAL STATE
+////////////////////////////////////////////////////////////////
+let apiKey = "";
+let history = [];
+let inventory = [];
+
+////////////////////////////////////////////////////////////////
+// START GAME
+////////////////////////////////////////////////////////////////
+async function startGame() {
+    apiKey = document.getElementById("apiKey").value.trim();
+    if (!apiKey) return alert("Enter your API key.");
+
+    const gameRules = document.getElementById("preInstructions").value;
+
+    history = [
+        { role: "system", content: gameRules }
+    ];
+
+    document.getElementById("gameBox").style.display = "block";
+
+    const firstQ = await grogQuery(apiKey, history);
+    showQuestion(firstQ);
+}
+
+////////////////////////////////////////////////////////////////
+// SHOW QUESTION + BUTTONS
+////////////////////////////////////////////////////////////////
+function showQuestion(text) {
+    document.getElementById("questionText").innerText = text;
+
+    const container = document.getElementById("options");
+    container.innerHTML = "";
+
+    const choices = ["A", "B", "C", "D", "E", "F"];
+    choices.forEach(ch => {
+        const btn = document.createElement("button");
+        btn.classList.add("choiceBtn");
+        btn.innerText = ch;
+        btn.onclick = () => choose(ch);
+        container.appendChild(btn);
+    });
+}
+
+////////////////////////////////////////////////////////////////
+// HANDLE CHOICE
+////////////////////////////////////////////////////////////////
+async function choose(option) {
+    history.push({ role: "user", content: option });
+
+    history.push({
+        role: "system",
+        content: "Reminder: Output ONLY the next scenario question in plain text. No formatting."
+    });
+
+    const nextQ = await grogQuery(apiKey, history);
+    showQuestion(nextQ);
+}
+
+////////////////////////////////////////////////////////////////
+// SAVE + LOAD SYSTEM
+////////////////////////////////////////////////////////////////
+function saveGame() {
+    const saveData = {
+        history,
+        inventory
+    };
+    localStorage.setItem("savedGame", JSON.stringify(saveData));
+    alert("Game saved!");
+}
+
+function loadGame() {
+    const data = localStorage.getItem("savedGame");
+    if (!data) return alert("No saved game found.");
+
+    const save = JSON.parse(data);
+    history = save.history;
+    inventory = save.inventory;
+
+    document.getElementById("gameBox").style.display = "block";
+
+    const lastAIMessage = history
+        .filter(m => m.role === "assistant")
+        .slice(-1)[0];
+
+    showQuestion(lastAIMessage.content);
+    updateInventory();
+}
+
+////////////////////////////////////////////////////////////////
+// INVENTORY SYSTEM (expandable)
+////////////////////////////////////////////////////////////////
+function updateInventory() {
+    const box = document.getElementById("inventoryBox");
+    if (inventory.length === 0) box.innerText = "Empty…";
+    else box.innerHTML = inventory.map(i => "• " + i).join("<br>");
+}
+</script>
+
+</body>
+</html>
