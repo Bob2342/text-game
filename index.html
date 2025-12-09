@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>AI Text Adventure (Enhanced)</title>
+<title>AI Text Adventure (Groq Streaming)</title>
 
 <style>
     body {
@@ -43,7 +43,7 @@
         min-height: 80px;
     }
 
-    /* Main game box */
+    /* Game box */
     #gameBox {
         flex: 1;
         background: #1f1f23;
@@ -52,6 +52,7 @@
         box-shadow: 0 0 10px #0008;
         display: none;
         animation: fadeIn .5s ease;
+        position: relative;
     }
 
     @keyframes fadeIn {
@@ -62,6 +63,7 @@
     #questionText {
         font-size: 1.3em;
         padding-bottom: 10px;
+        white-space: pre-wrap;
     }
 
     /* Buttons */
@@ -91,6 +93,20 @@
         margin-top: 10px;
         cursor: pointer;
     }
+
+    #skipBtn {
+        display:none;
+        position:absolute;
+        top:20px;
+        right:20px;
+        padding:10px 15px;
+        background:#ff4444;
+        border:none;
+        color:white;
+        border-radius:6px;
+        cursor:pointer;
+        z-index:10;
+    }
 </style>
 </head>
 <body>
@@ -101,7 +117,7 @@
     <div id="sidebar">
         <h3>Game Settings</h3>
 
-        <label>GrogCloud API Key:</label>
+        <label>Groq API Key:</label>
         <input id="apiKey" type="password" style="width:100%; padding:6px; margin-top:5px; background:#2d2d31; border:1px solid #444; color:white; border-radius:6px;">
 
         <label style="margin-top:15px;">Game Instructions:</label>
@@ -118,9 +134,9 @@ No explanations. No formatting. No lists.</textarea>
         <div id="inventoryBox">Empty…</div>
     </div>
 
-
-    <!-- Game panel -->
+    <!-- Game Panel -->
     <div id="gameBox">
+        <button id="skipBtn">Skip</button>
         <div id="questionText">Loading…</div>
         <div id="options"></div>
     </div>
@@ -128,96 +144,166 @@ No explanations. No formatting. No lists.</textarea>
 </div>
 
 <script>
-////////////////////////////////////////////////////////////////
-// API CALL TO GROGCLOUD
-////////////////////////////////////////////////////////////////
-async function grogQuery(apiKey, messages) {
-    const res = await fetch("https://api.grogcloud.com/v1/chat/completions", {
+/* ----------------------------------------------------------
+    GLOBALS
+---------------------------------------------------------- */
+let skipRequested = false;
+let skipButtonTimeout = null;
+let apiKey = "";
+let history = [];
+let inventory = [];
+
+/* ----------------------------------------------------------
+    SKIP BUTTON BEHAVIOR
+---------------------------------------------------------- */
+document.getElementById("skipBtn").onclick = () => {
+    skipRequested = true;
+    document.getElementById("skipBtn").style.display = "none";
+};
+
+/* ----------------------------------------------------------
+   GROQ STREAMING QUERY FUNCTION
+---------------------------------------------------------- */
+async function groqQuery(apiKey, messages, onChunk, onDone) {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
             "Authorization": "Bearer " + apiKey,
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            model: "grog-chat-1",
+            model: "openai/gpt-oss-120b",
             messages: messages,
-            max_tokens: 200
+            temperature: 1,
+            max_completion_tokens: 300,
+            top_p: 1,
+            reasoning_effort: "medium",
+            stream: true
         })
     });
 
-    const data = await res.json();
-    return data.choices[0].message.content;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+
+    skipRequested = false;
+    clearTimeout(skipButtonTimeout);
+
+    // Show skip button if typing lasts over 3 sec
+    skipButtonTimeout = setTimeout(() => {
+        if (!skipRequested) {
+            document.getElementById("skipBtn").style.display = "block";
+        }
+    }, 3000);
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const json = line.replace("data: ", "").trim();
+
+            if (json === "[DONE]") continue;
+
+            try {
+                const parsed = JSON.parse(json);
+                const delta = parsed.choices?.[0]?.delta?.content;
+
+                if (delta) {
+                    fullText += delta;
+
+                    if (skipRequested) {
+                        onChunk(fullText);
+                    } else {
+                        onChunk(fullText);
+                        await new Promise(r => setTimeout(r, 10)); // typing speed
+                    }
+                }
+            } catch (e) {
+                console.error("Stream parse error:", e);
+            }
+        }
+    }
+
+    clearTimeout(skipButtonTimeout);
+    document.getElementById("skipBtn").style.display = "none";
+
+    onDone(fullText);
+    return fullText;
 }
 
-////////////////////////////////////////////////////////////////
-// GLOBAL STATE
-////////////////////////////////////////////////////////////////
-let apiKey = "";
-let history = [];
-let inventory = [];
-
-////////////////////////////////////////////////////////////////
-// START GAME
-////////////////////////////////////////////////////////////////
+/* ----------------------------------------------------------
+    GAME START
+---------------------------------------------------------- */
 async function startGame() {
     apiKey = document.getElementById("apiKey").value.trim();
     if (!apiKey) return alert("Enter your API key.");
 
-    const gameRules = document.getElementById("preInstructions").value;
+    const rules = document.getElementById("preInstructions").value;
 
     history = [
-        { role: "system", content: gameRules }
+        { role: "system", content: rules }
     ];
 
     document.getElementById("gameBox").style.display = "block";
+    document.getElementById("questionText").innerText = "Loading…";
 
-    const firstQ = await grogQuery(apiKey, history);
-    showQuestion(firstQ);
+    await groqQuery(
+        apiKey,
+        history,
+        partial => { document.getElementById("questionText").innerText = partial; },
+        final => { showQuestion(final); }
+    );
 }
 
-////////////////////////////////////////////////////////////////
-// SHOW QUESTION + BUTTONS
-////////////////////////////////////////////////////////////////
-function showQuestion(text) {
-    document.getElementById("questionText").innerText = text;
+/* ----------------------------------------------------------
+    DISPLAY QUESTION + CHOICES
+---------------------------------------------------------- */
+function showQuestion(q) {
+    document.getElementById("questionText").innerText = q;
 
     const container = document.getElementById("options");
     container.innerHTML = "";
 
-    const choices = ["A", "B", "C", "D", "E", "F"];
-    choices.forEach(ch => {
-        const btn = document.createElement("button");
-        btn.classList.add("choiceBtn");
+    ["A","B","C","D","E","F"].forEach(ch => {
+        let btn = document.createElement("button");
+        btn.className = "choiceBtn";
         btn.innerText = ch;
         btn.onclick = () => choose(ch);
         container.appendChild(btn);
     });
 }
 
-////////////////////////////////////////////////////////////////
-// HANDLE CHOICE
-////////////////////////////////////////////////////////////////
+/* ----------------------------------------------------------
+    PLAYER CHOICE HANDLER
+---------------------------------------------------------- */
 async function choose(option) {
     history.push({ role: "user", content: option });
 
     history.push({
         role: "system",
-        content: "Reminder: Output ONLY the next scenario question in plain text. No formatting."
+        content: "Reminder: Output ONLY the next scenario question."
     });
 
-    const nextQ = await grogQuery(apiKey, history);
-    showQuestion(nextQ);
+    document.getElementById("questionText").innerText = "";
+
+    await groqQuery(
+        apiKey,
+        history,
+        partial => { document.getElementById("questionText").innerText = partial; },
+        final => { showQuestion(final); }
+    );
 }
 
-////////////////////////////////////////////////////////////////
-// SAVE + LOAD SYSTEM
-////////////////////////////////////////////////////////////////
+/* ----------------------------------------------------------
+    SAVE & LOAD
+---------------------------------------------------------- */
 function saveGame() {
-    const saveData = {
-        history,
-        inventory
-    };
-    localStorage.setItem("savedGame", JSON.stringify(saveData));
+    localStorage.setItem("savedGame", JSON.stringify({ history, inventory }));
     alert("Game saved!");
 }
 
@@ -228,24 +314,20 @@ function loadGame() {
     const save = JSON.parse(data);
     history = save.history;
     inventory = save.inventory;
+    updateInventory();
+
+    const last = history.filter(m => m.role === "assistant").slice(-1)[0];
 
     document.getElementById("gameBox").style.display = "block";
-
-    const lastAIMessage = history
-        .filter(m => m.role === "assistant")
-        .slice(-1)[0];
-
-    showQuestion(lastAIMessage.content);
-    updateInventory();
+    showQuestion(last.content);
 }
 
-////////////////////////////////////////////////////////////////
-// INVENTORY SYSTEM (expandable)
-////////////////////////////////////////////////////////////////
+/* ----------------------------------------------------------
+    INVENTORY
+---------------------------------------------------------- */
 function updateInventory() {
     const box = document.getElementById("inventoryBox");
-    if (inventory.length === 0) box.innerText = "Empty…";
-    else box.innerHTML = inventory.map(i => "• " + i).join("<br>");
+    box.innerHTML = inventory.length ? inventory.map(i => "• " + i).join("<br>") : "Empty…";
 }
 </script>
 
