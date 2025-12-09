@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>AI Text Adventure (Groq Streaming)</title>
+<title>AI Text Adventure (Groq Streaming + Free Actions)</title>
 
 <style>
     body {
@@ -31,10 +31,6 @@
         box-shadow: 0 0 10px #0006;
     }
 
-    #sidebar h3 {
-        margin-top: 0;
-    }
-
     #inventoryBox {
         margin-top: 20px;
         border: 1px solid #333;
@@ -43,7 +39,7 @@
         min-height: 80px;
     }
 
-    /* Game box */
+    /* Game panel */
     #gameBox {
         flex: 1;
         background: #1f1f23;
@@ -56,42 +52,40 @@
     }
 
     @keyframes fadeIn {
-        from {opacity: 0; transform: translateY(10px);}
-        to {opacity: 1; transform: translateY(0);}
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
     }
 
     #questionText {
         font-size: 1.3em;
-        padding-bottom: 10px;
+        padding-bottom: 15px;
         white-space: pre-wrap;
     }
 
-    /* Buttons */
-    .choiceBtn {
+    #playerInput {
         width: 100%;
-        padding: 14px;
-        margin-top: 10px;
-        border: none;
+        padding: 12px;
         border-radius: 8px;
-        background: #3a3af1;
+        background: #2b2b30;
+        border: 1px solid #444;
         color: white;
-        font-size: 1em;
-        transition: .15s;
-    }
-
-    .choiceBtn:hover {
-        background: #5656ff;
-        cursor: pointer;
-    }
-
-    .smallBtn {
-        background: #444;
-        color: #eee;
-        padding: 8px 14px;
-        border-radius: 6px;
-        border: none;
         margin-top: 10px;
+        margin-bottom: 10px;
+    }
+
+    #actionBtn {
+        padding: 12px;
+        background: #3a3af1;
+        border: none;
+        border-radius: 6px;
+        color: white;
         cursor: pointer;
+        width: 100%;
+        font-size: 1em;
+    }
+
+    #actionBtn:hover {
+        background: #5656ff;
     }
 
     #skipBtn {
@@ -122,9 +116,8 @@
 
         <label style="margin-top:15px;">Game Instructions:</label>
         <textarea id="preInstructions" rows="6" style="width:100%; background:#2d2d31; border:1px solid #444; color:white; padding:6px; border-radius:6px;">You are a text adventure generator.
-You output ONLY the next scenario question.
-Example: "You see a house. What do you do?"
-No explanations. No formatting. No lists.</textarea>
+Output ONLY the next scenario question.
+No explanations, no lists, no formatting.</textarea>
 
         <button class="smallBtn" onclick="startGame()">Start Game</button>
         <button class="smallBtn" onclick="saveGame()">Save Game</button>
@@ -134,36 +127,60 @@ No explanations. No formatting. No lists.</textarea>
         <div id="inventoryBox">Empty…</div>
     </div>
 
-    <!-- Game Panel -->
+    <!-- Game -->
     <div id="gameBox">
         <button id="skipBtn">Skip</button>
+
         <div id="questionText">Loading…</div>
-        <div id="options"></div>
+
+        <input id="playerInput" placeholder="Type your action...">
+        <button id="actionBtn" onclick="submitAction()">Submit Action</button>
+
+        <div id="errorText" style="color:#ff4444; margin-top:10px;"></div>
     </div>
 
 </div>
 
 <script>
-/* ----------------------------------------------------------
-    GLOBALS
----------------------------------------------------------- */
+/* ======================================
+   GLOBALS
+====================================== */
 let skipRequested = false;
 let skipButtonTimeout = null;
 let apiKey = "";
 let history = [];
 let inventory = [];
 
-/* ----------------------------------------------------------
-    SKIP BUTTON BEHAVIOR
----------------------------------------------------------- */
+/* ======================================
+   FORBIDDEN ACTION VALIDATOR
+====================================== */
+const forbiddenWords = [
+    "fly", "fly away",
+    "teleport", "tp",
+    "spawn", "summon",
+    "nuke", "explode",
+    "kill everyone", "kill all",
+    "hack", "glitch",
+    "duplicate", "duplicate item"
+];
+
+function isForbiddenAction(text) {
+    const lower = text.toLowerCase();
+
+    return forbiddenWords.some(word => lower.includes(word));
+}
+
+/* ======================================
+   SKIP BUTTON
+====================================== */
 document.getElementById("skipBtn").onclick = () => {
     skipRequested = true;
     document.getElementById("skipBtn").style.display = "none";
 };
 
-/* ----------------------------------------------------------
-   GROQ STREAMING QUERY FUNCTION
----------------------------------------------------------- */
+/* ======================================
+   GROQ STREAMING FUNCTION
+====================================== */
 async function groqQuery(apiKey, messages, onChunk, onDone) {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -176,8 +193,6 @@ async function groqQuery(apiKey, messages, onChunk, onDone) {
             messages: messages,
             temperature: 1,
             max_completion_tokens: 300,
-            top_p: 1,
-            reasoning_effort: "medium",
             stream: true
         })
     });
@@ -189,7 +204,6 @@ async function groqQuery(apiKey, messages, onChunk, onDone) {
     skipRequested = false;
     clearTimeout(skipButtonTimeout);
 
-    // Show skip button if typing lasts over 3 sec
     skipButtonTimeout = setTimeout(() => {
         if (!skipRequested) {
             document.getElementById("skipBtn").style.display = "block";
@@ -220,12 +234,10 @@ async function groqQuery(apiKey, messages, onChunk, onDone) {
                         onChunk(fullText);
                     } else {
                         onChunk(fullText);
-                        await new Promise(r => setTimeout(r, 10)); // typing speed
+                        await new Promise(r => setTimeout(r, 10));
                     }
                 }
-            } catch (e) {
-                console.error("Stream parse error:", e);
-            }
+            } catch {}
         }
     }
 
@@ -236,12 +248,12 @@ async function groqQuery(apiKey, messages, onChunk, onDone) {
     return fullText;
 }
 
-/* ----------------------------------------------------------
-    GAME START
----------------------------------------------------------- */
+/* ======================================
+   START GAME
+====================================== */
 async function startGame() {
     apiKey = document.getElementById("apiKey").value.trim();
-    if (!apiKey) return alert("Enter your API key.");
+    if (!apiKey) return alert("Enter API key.");
 
     const rules = document.getElementById("preInstructions").value;
 
@@ -255,38 +267,43 @@ async function startGame() {
     await groqQuery(
         apiKey,
         history,
-        partial => { document.getElementById("questionText").innerText = partial; },
-        final => { showQuestion(final); }
+        partial => (document.getElementById("questionText").innerText = partial),
+        final => showQuestion(final)
     );
 }
 
-/* ----------------------------------------------------------
-    DISPLAY QUESTION + CHOICES
----------------------------------------------------------- */
+/* ======================================
+   SHOW QUESTION
+====================================== */
 function showQuestion(q) {
     document.getElementById("questionText").innerText = q;
-
-    const container = document.getElementById("options");
-    container.innerHTML = "";
-
-    ["A","B","C","D","E","F"].forEach(ch => {
-        let btn = document.createElement("button");
-        btn.className = "choiceBtn";
-        btn.innerText = ch;
-        btn.onclick = () => choose(ch);
-        container.appendChild(btn);
-    });
 }
 
-/* ----------------------------------------------------------
-    PLAYER CHOICE HANDLER
----------------------------------------------------------- */
-async function choose(option) {
-    history.push({ role: "user", content: option });
+/* ======================================
+   PLAYER ACTION
+====================================== */
+async function submitAction() {
+    const pInput = document.getElementById("playerInput");
+    const errorBox = document.getElementById("errorText");
+    const action = pInput.value.trim();
+
+    errorBox.innerText = "";
+
+    if (!action) return;
+
+    // Check forbidden actions
+    if (isForbiddenAction(action)) {
+        errorBox.innerText = "Sorry, you can’t do that.";
+        return;
+    }
+
+    pInput.value = "";
+
+    history.push({ role: "user", content: action });
 
     history.push({
         role: "system",
-        content: "Reminder: Output ONLY the next scenario question."
+        content: "Reminder: only output the next scenario question."
     });
 
     document.getElementById("questionText").innerText = "";
@@ -294,14 +311,14 @@ async function choose(option) {
     await groqQuery(
         apiKey,
         history,
-        partial => { document.getElementById("questionText").innerText = partial; },
-        final => { showQuestion(final); }
+        partial => (document.getElementById("questionText").innerText = partial),
+        final => showQuestion(final)
     );
 }
 
-/* ----------------------------------------------------------
-    SAVE & LOAD
----------------------------------------------------------- */
+/* ======================================
+   SAVE / LOAD
+====================================== */
 function saveGame() {
     localStorage.setItem("savedGame", JSON.stringify({ history, inventory }));
     alert("Game saved!");
@@ -314,20 +331,12 @@ function loadGame() {
     const save = JSON.parse(data);
     history = save.history;
     inventory = save.inventory;
-    updateInventory();
 
     const last = history.filter(m => m.role === "assistant").slice(-1)[0];
+    if (!last) return alert("Save corrupted.");
 
     document.getElementById("gameBox").style.display = "block";
     showQuestion(last.content);
-}
-
-/* ----------------------------------------------------------
-    INVENTORY
----------------------------------------------------------- */
-function updateInventory() {
-    const box = document.getElementById("inventoryBox");
-    box.innerHTML = inventory.length ? inventory.map(i => "• " + i).join("<br>") : "Empty…";
 }
 </script>
 
